@@ -1,56 +1,88 @@
-```javascript
-// /api/ia.js
-
 export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
 
   if (req.method !== 'POST') {
-    return res.status(405).json({
-      error: 'Método não permitido'
-    });
+    return res.status(405).json({ error: 'Método não permitido' });
   }
 
   try {
-
-    const {
-      question,
-      dataset,
-      openai_body
-    } = req.body;
+    const { question, dataset } = req.body || {};
 
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
     if (!GEMINI_API_KEY) {
       return res.status(500).json({
-        error: 'GEMINI_API_KEY não configurada'
+        error: 'GEMINI_API_KEY não configurada no Vercel'
+      });
+    }
+
+    if (!question) {
+      return res.status(400).json({
+        error: 'Pergunta não informada'
+      });
+    }
+
+    if (!dataset) {
+      return res.status(400).json({
+        error: 'Dataset não informado'
       });
     }
 
     const prompt = `
-Você é um analista sênior de dados comerciais e financeiros especializado em varejo.
+Você é um analista sênior de dados comerciais e financeiros de varejo.
 
-RESPONDA EXCLUSIVAMENTE EM JSON.
+Responda exclusivamente em JSON válido.
+Não use markdown.
+Não invente dados.
+Use somente os dados recebidos.
 
 Formato obrigatório:
-
 {
-  "title": "",
-  "subtitle": "",
-  "insights": [],
-  "cards": [],
-  "tables": [],
-  "charts": []
+  "title": "string",
+  "subtitle": "string",
+  "insights": ["string"],
+  "cards": [
+    {
+      "title": "string",
+      "value": "string",
+      "detail": "string",
+      "status": "good|bad|neutral"
+    }
+  ],
+  "tables": [
+    {
+      "title": "string",
+      "columns": ["string"],
+      "rows": [["string"]]
+    }
+  ],
+  "charts": [
+    {
+      "type": "bar|donut",
+      "title": "string",
+      "labels": ["string"],
+      "values": [0],
+      "valuePrefix": "string",
+      "valueSuffix": "string"
+    }
+  ]
 }
 
 Pergunta do usuário:
-
 ${question}
 
-Base de dados:
-
+Dados:
 ${JSON.stringify(dataset)}
 `;
 
-    const response = await fetch(
+    const geminiResponse = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: 'POST',
@@ -61,11 +93,7 @@ ${JSON.stringify(dataset)}
           contents: [
             {
               role: 'user',
-              parts: [
-                {
-                  text: prompt
-                }
-              ]
+              parts: [{ text: prompt }]
             }
           ],
           generationConfig: {
@@ -76,47 +104,35 @@ ${JSON.stringify(dataset)}
       }
     );
 
-    const result = await response.json();
+    const geminiData = await geminiResponse.json();
 
-    if (!response.ok) {
-      console.error(result);
-
-      return res.status(response.status).json({
-        error: result
+    if (!geminiResponse.ok) {
+      return res.status(geminiResponse.status).json({
+        error: 'Erro ao consultar Gemini',
+        detail: geminiData
       });
     }
 
     const text =
-      result?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
     try {
-
-      const json = JSON.parse(text);
-
-      return res.status(200).json(json);
-
-    } catch {
-
+      return res.status(200).json(JSON.parse(text));
+    } catch (e) {
       return res.status(200).json({
         title: 'Resposta Gemini',
-        subtitle: 'Resposta não estruturada',
+        subtitle: 'A resposta não veio em JSON estruturado',
         insights: [text],
         cards: [],
         tables: [],
         charts: []
       });
-
     }
 
   } catch (error) {
-
-    console.error(error);
-
     return res.status(500).json({
-      error: error.message
+      error: 'Erro interno no proxy',
+      detail: error.message
     });
-
   }
-
 }
-```
