@@ -22,6 +22,14 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'GEMINI_API_KEY não configurada' });
     }
 
+    if (!question) {
+      return res.status(400).json({ error: 'Pergunta não informada' });
+    }
+
+    if (!dataset) {
+      return res.status(400).json({ error: 'Dataset não informado' });
+    }
+
     const prompt = `
 Você é um analista sênior de dados comerciais e financeiros de varejo.
 
@@ -71,35 +79,44 @@ ${JSON.stringify(dataset)}
 
     const modelos = [
       'gemini-2.5-flash',
-      'gemini-2.0-flash',
-      'gemini-1.5-flash'
+      'gemini-2.0-flash'
     ];
 
     let ultimoErro = null;
 
     for (const model of modelos) {
       for (let tentativa = 1; tentativa <= 3; tentativa++) {
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [
-                {
-                  role: 'user',
-                  parts: [{ text: prompt }]
-                }
-              ],
-              generationConfig: {
-                temperature: 0.2,
-                responseMimeType: 'application/json'
-              }
-            })
-          }
-        );
+        let response;
+        let data;
 
-        const data = await response.json();
+        try {
+          response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    role: 'user',
+                    parts: [{ text: prompt }]
+                  }
+                ],
+                generationConfig: {
+                  temperature: 0.2,
+                  responseMimeType: 'application/json'
+                }
+              })
+            }
+          );
+
+          data = await response.json();
+
+        } catch (error) {
+          ultimoErro = { error: error.message, model, tentativa };
+          await sleep(1000 * tentativa);
+          continue;
+        }
 
         if (response.ok) {
           const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
@@ -123,9 +140,21 @@ ${JSON.stringify(dataset)}
         const status = data?.error?.status;
         const code = data?.error?.code;
 
-        if (code === 503 || status === 'UNAVAILABLE' || code === 429 || status === 'RESOURCE_EXHAUSTED') {
+        if (
+          code === 503 ||
+          status === 'UNAVAILABLE' ||
+          code === 429 ||
+          status === 'RESOURCE_EXHAUSTED'
+        ) {
           await sleep(1000 * tentativa);
           continue;
+        }
+
+        if (
+          code === 404 ||
+          status === 'NOT_FOUND'
+        ) {
+          break;
         }
 
         return res.status(response.status).json({
@@ -137,7 +166,7 @@ ${JSON.stringify(dataset)}
     }
 
     return res.status(503).json({
-      error: 'Todos os modelos Gemini testados retornaram indisponibilidade ou limite temporário.',
+      error: 'Todos os modelos Gemini testados retornaram indisponibilidade, limite temporário ou não estão disponíveis.',
       detail: ultimoErro
     });
 
