@@ -15,6 +15,7 @@ export default async function handler(req, res) {
 
   function normalizarBody(body) {
     if (!body) return {};
+
     if (typeof body === 'string') {
       try {
         return JSON.parse(body);
@@ -22,19 +23,22 @@ export default async function handler(req, res) {
         return {};
       }
     }
+
     return body;
   }
 
   function limitarDataset(dataset) {
     const texto = JSON.stringify(dataset || {});
+
     if (texto.length > 700000) {
       throw new Error('Dataset muito grande para análise. Reduza a quantidade de linhas enviadas.');
     }
+
     return texto;
   }
 
   function montarPrompt(question, datasetTexto) {
-    return `
+    return String.raw`
 Você é um analista sênior de BI comercial e financeiro para varejo.
 
 Sua missão é responder à pergunta do usuário usando exclusivamente os dados enviados.
@@ -60,8 +64,12 @@ Regras de inteligência analítica:
 6. Se existir rankingRiscoFiliais no dataset, use esse ranking como principal base da análise.
 7. Não recomende fechamento apenas por faturamento baixo se a filial for lucrativa.
 8. Não recomende fechamento apenas por resultado negativo se faltar análise de contrato, aluguel, estoque, equipe, localização e estratégia.
-9. Quando usar percentual de margem, deixe claro se é percentual. Quando comparar margens, use pontos percentuais.
-10. Responda em português do Brasil, com tom executivo, direto e útil.
+9. Quando usar percentual de margem, deixe claro se é percentual.
+10. Quando comparar margens, use pontos percentuais.
+11. Responda em português do Brasil, com tom executivo, direto e útil.
+12. Gere cards, tabelas e gráficos coerentes com a pergunta. Não gere gráficos vazios.
+13. Em tabelas, coloque valores já formatados como texto em português do Brasil.
+14. Para rankings de risco, mostre no mínimo filial, nível de risco, score, resultado, margem, break-even, variação e motivos.
 
 Pergunta do usuário:
 ${question}
@@ -148,7 +156,6 @@ ${datasetTexto}
   try {
     const body = normalizarBody(req.body);
     const { question, dataset } = body;
-
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
     if (!GEMINI_API_KEY) {
@@ -263,3 +270,4 @@ ${datasetTexto}
     });
   }
 }
+
