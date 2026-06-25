@@ -1,11 +1,10 @@
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    return res.status(204).end();
   }
 
   if (req.method !== 'POST') {
@@ -14,8 +13,142 @@ export default async function handler(req, res) {
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+  function normalizarBody(body) {
+    if (!body) return {};
+    if (typeof body === 'string') {
+      try {
+        return JSON.parse(body);
+      } catch {
+        return {};
+      }
+    }
+    return body;
+  }
+
+  function limitarDataset(dataset) {
+    const texto = JSON.stringify(dataset || {});
+    if (texto.length > 700000) {
+      throw new Error('Dataset muito grande para análise. Reduza a quantidade de linhas enviadas.');
+    }
+    return texto;
+  }
+
+  function montarPrompt(question, datasetTexto) {
+    return `
+Você é um analista sênior de BI comercial e financeiro para varejo.
+
+Sua missão é responder à pergunta do usuário usando exclusivamente os dados enviados.
+Não invente números.
+Não use conhecimento externo.
+Não diga que não consegue analisar se os dados necessários estiverem disponíveis.
+Se houver dados insuficientes, explique exatamente o que falta.
+
+Regras de inteligência analítica:
+1. Sempre priorize evidências numéricas.
+2. Compare mês atual contra mês anterior quando houver dados.
+3. Para filiais, avalie resultado, margem líquida, faturamento, vendas, ticket médio, break-even, despesas e tendência.
+4. Se a pergunta envolver "fechar filial", "encerrar filial" ou "qual filial deve ser fechada", NÃO responda como decisão definitiva.
+   Responda como ranking de risco operacional e recomendação de revisão gerencial.
+5. Uma filial crítica geralmente combina:
+   - resultado negativo;
+   - margem líquida negativa ou muito baixa;
+   - faturamento abaixo do break-even;
+   - queda de faturamento;
+   - queda de resultado;
+   - baixa participação no faturamento;
+   - despesa alta em relação ao faturamento.
+6. Se existir rankingRiscoFiliais no dataset, use esse ranking como principal base da análise.
+7. Não recomende fechamento apenas por faturamento baixo se a filial for lucrativa.
+8. Não recomende fechamento apenas por resultado negativo se faltar análise de contrato, aluguel, estoque, equipe, localização e estratégia.
+9. Quando usar percentual de margem, deixe claro se é percentual. Quando comparar margens, use pontos percentuais.
+10. Responda em português do Brasil, com tom executivo, direto e útil.
+
+Pergunta do usuário:
+${question}
+
+Dados disponíveis:
+${datasetTexto}
+`;
+  }
+
+  const responseSchema = {
+    type: 'OBJECT',
+    properties: {
+      title: { type: 'STRING' },
+      subtitle: { type: 'STRING' },
+      insights: {
+        type: 'ARRAY',
+        items: { type: 'STRING' }
+      },
+      cards: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            title: { type: 'STRING' },
+            value: { type: 'STRING' },
+            detail: { type: 'STRING' },
+            status: {
+              type: 'STRING',
+              enum: ['good', 'bad', 'neutral']
+            }
+          },
+          required: ['title', 'value', 'detail', 'status']
+        }
+      },
+      tables: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            title: { type: 'STRING' },
+            columns: {
+              type: 'ARRAY',
+              items: { type: 'STRING' }
+            },
+            rows: {
+              type: 'ARRAY',
+              items: {
+                type: 'ARRAY',
+                items: { type: 'STRING' }
+              }
+            }
+          },
+          required: ['title', 'columns', 'rows']
+        }
+      },
+      charts: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            type: {
+              type: 'STRING',
+              enum: ['bar', 'donut']
+            },
+            title: { type: 'STRING' },
+            labels: {
+              type: 'ARRAY',
+              items: { type: 'STRING' }
+            },
+            values: {
+              type: 'ARRAY',
+              items: { type: 'NUMBER' }
+            },
+            valuePrefix: { type: 'STRING' },
+            valueSuffix: { type: 'STRING' }
+          },
+          required: ['type', 'title', 'labels', 'values', 'valuePrefix', 'valueSuffix']
+        }
+      }
+    },
+    required: ['title', 'subtitle', 'insights', 'cards', 'tables', 'charts']
+  };
+
   try {
-    const { question, dataset } = req.body || {};
+    const body = normalizarBody(req.body);
+    const { question, dataset } = body;
+
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
     if (!GEMINI_API_KEY) {
@@ -30,52 +163,8 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Dataset não informado' });
     }
 
-    const prompt = `
-Você é um analista sênior de dados comerciais e financeiros de varejo.
-
-Responda exclusivamente em JSON válido.
-Não use markdown.
-Não invente dados.
-Use somente os dados recebidos.
-
-Formato obrigatório:
-{
-  "title": "string",
-  "subtitle": "string",
-  "insights": ["string"],
-  "cards": [
-    {
-      "title": "string",
-      "value": "string",
-      "detail": "string",
-      "status": "good|bad|neutral"
-    }
-  ],
-  "tables": [
-    {
-      "title": "string",
-      "columns": ["string"],
-      "rows": [["string"]]
-    }
-  ],
-  "charts": [
-    {
-      "type": "bar|donut",
-      "title": "string",
-      "labels": ["string"],
-      "values": [0],
-      "valuePrefix": "string",
-      "valueSuffix": "string"
-    }
-  ]
-}
-
-Pergunta do usuário:
-${question}
-
-Dados:
-${JSON.stringify(dataset)}
-`;
+    const datasetTexto = limitarDataset(dataset);
+    const prompt = montarPrompt(question, datasetTexto);
 
     const modelos = [
       'gemini-2.5-flash',
@@ -103,15 +192,16 @@ ${JSON.stringify(dataset)}
                   }
                 ],
                 generationConfig: {
-                  temperature: 0.2,
-                  responseMimeType: 'application/json'
+                  temperature: 0.15,
+                  topP: 0.8,
+                  responseMimeType: 'application/json',
+                  responseSchema
                 }
               })
             }
           );
 
           data = await response.json();
-
         } catch (error) {
           ultimoErro = { error: error.message, model, tentativa };
           await sleep(1000 * tentativa);
@@ -126,8 +216,8 @@ ${JSON.stringify(dataset)}
           } catch {
             return res.status(200).json({
               title: 'Resposta Gemini',
-              subtitle: 'A resposta não veio em JSON estruturado',
-              insights: [text],
+              subtitle: 'A resposta não veio em JSON estruturado.',
+              insights: [text || 'A IA não retornou conteúdo.'],
               cards: [],
               tables: [],
               charts: []
@@ -150,10 +240,7 @@ ${JSON.stringify(dataset)}
           continue;
         }
 
-        if (
-          code === 404 ||
-          status === 'NOT_FOUND'
-        ) {
+        if (code === 404 || status === 'NOT_FOUND') {
           break;
         }
 
@@ -169,7 +256,6 @@ ${JSON.stringify(dataset)}
       error: 'Todos os modelos Gemini testados retornaram indisponibilidade, limite temporário ou não estão disponíveis.',
       detail: ultimoErro
     });
-
   } catch (error) {
     return res.status(500).json({
       error: 'Erro interno no proxy',
